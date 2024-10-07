@@ -1,0 +1,389 @@
+---
+title: "Open Science Badges Database Summary"
+author: "Steven Kambouris"
+format: html
+---
+
+# Introduction
+
+```{r `setup`}
+#| echo: false
+#| output: false
+
+library(tidyverse)
+library(here)
+library(cowplot)
+library(gtable)
+library(grid)
+library(kableExtra)
+library(forcats)
+
+# Import the latest version of the Open Science Badges database and clean
+osb_lib_all <- read_csv(here("data",
+                             "osb_lib_with_study_id_2024-08-09.csv")) |> 
+  
+  # Rename journal titles
+  mutate(`Publication Title` = case_when(
+    `Publication Title` == "Canadian Journal of Experimental Psychology / Revue canadienne de psychologie expérimentale" ~ "Canadian Journal of Experimental Psychology",
+    TRUE ~ `Publication Title`
+  )) |> 
+  
+  # Add badge combination flags
+  mutate(badge_combination = case_when(
+    OpenDataBadge == TRUE & OpenMaterialsBadge == FALSE & PreregisteredBadge == FALSE ~ "D",
+    OpenDataBadge == FALSE & OpenMaterialsBadge == TRUE & PreregisteredBadge == FALSE ~ "M",
+    OpenDataBadge == FALSE & OpenMaterialsBadge == FALSE & PreregisteredBadge == TRUE ~ "P",
+    OpenDataBadge == TRUE & OpenMaterialsBadge == TRUE & PreregisteredBadge == FALSE ~ "DM",
+    OpenDataBadge == TRUE & OpenMaterialsBadge == FALSE & PreregisteredBadge == TRUE ~ "DP",
+    OpenDataBadge == FALSE & OpenMaterialsBadge == TRUE & PreregisteredBadge == TRUE ~ "MP",
+    OpenDataBadge == TRUE & OpenMaterialsBadge == TRUE & PreregisteredBadge == TRUE ~ "DMP",
+    TRUE ~ NA_character_
+  ))
+
+# These are the study IDs of articles which are errata about articles with
+# badges.
+# Note that article a000868 is tagged with the erratum tag, and is titled
+# "Corrigendum: ..." (and has been retracted), but is being included as a
+# proper article.
+ids_errata_only <- c("a000656", "a000699", "a001842", "a004451")
+
+# Filter out the Erratum articles
+osb_lib_errata <- osb_lib_all |> 
+  filter(study_id %in% ids_errata_only)
+
+# Include only those articles which are "substantial" articles
+osb_lib_articles <- osb_lib_all |> 
+  filter(! study_id %in% ids_errata_only)
+
+```
+
+
+
+```{r `calc-counts`}
+#| echo: false
+
+# All records in the database
+n_allrecords <- nrow(osb_lib_all)
+
+# The number of erratum articles
+n_errataonly <- nrow(osb_lib_errata)
+
+# The number of proper articles with badges
+n_articles <- nrow(osb_lib_articles)
+
+# Earliest and latest (effective) publication year
+pubyr_earliest <- min(osb_lib_articles$effective_year)
+pubyr_latest <- max(osb_lib_articles$effective_year)
+
+```
+
+# Results
+
+## Participating journals
+
+```{r `format-wos-cats`}
+#| echo: false
+
+# Import the cleaned WoS data for journals
+wos_cats_raw <- read_csv(here("data",
+                              "osb_lib_journals_wos_subj_cats.csv"))
+
+# Format the data into a long format, one subject category per row.
+# This will duplicate some journals
+wos_cats_fmt <- wos_cats_raw |> 
+  separate_longer_delim(cols = wos_subj_cat_all,
+                        delim = "|") |> 
+  mutate(wos_subj_cat = str_trim(wos_subj_cat_all)) |> 
+  group_by(wos_subj_cat) |> 
+  count() |> 
+  ungroup() |> 
+  arrange(desc(n)) |> 
+  mutate(pct = round(100*n/nrow(wos_cats_raw), 1))
+
+kbl(wos_cats_fmt)
+
+```
+
+
+## Articles awarded badges
+
+The database lists a total of `r n_allrecords` records, consisting of `r n_articles` articles awarded at least one badge (of any type) over the period `r pubyr_earliest`-`r pubyr_latest` and `r n_errataonly` Erratum articles addressing issues regarding badges.
+
+```{r `chart-counts`}
+#| echo: false
+
+# Cumulative count of journals publishing articles with badges by year
+# For this, ignore the Internet Arch papers published before 2015
+cum_journals_by_pubyear <- osb_lib_articles |> 
+  filter(! (`Publication Year` < 2015 & `Publication Title` == "Internet Archaeology")) |> 
+  arrange(`Publication Title`, effective_year) |> 
+  group_by(`Publication Title`) |> 
+  slice_head() |> 
+  ungroup() |> 
+  group_by(effective_year) |> 
+  count() |> 
+  ungroup() |> 
+  mutate(cum_sum = cumsum(n))
+
+fig_bypubyear_cumj <- ggplot(data = cum_journals_by_pubyear,
+                             aes(x = `effective_year`, y = `cum_sum`)) +
+  geom_col(colour = "black", fill = "orangered") +
+  labs(x = "Publication Year", y = "Cumulative number of journals") +
+  scale_y_continuous(breaks = seq(0, 70, by = 10)) +
+  scale_x_continuous(breaks = seq(2014, 2023, by = 1)) +
+  theme_bw() +
+  theme(axis.title = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(colour = "black", size = 10),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  annotate(geom = "text", label = "(a)", x = -Inf, y = Inf, hjust = -0.2, vjust = 1.2,
+           colour = "black", size = 8, fontface = 2)
+
+
+
+# Get the number of articles published each year
+# For this, ignore the Internet Arch papers published before 2015
+n_articles_by_pubyear <- osb_lib_articles |> 
+  filter(! (`Publication Year` < 2015 & `Publication Title` == "Internet Archaeology")) |> 
+  group_by(`Publication Year`) |> 
+  count()
+
+fig_bypubyear_artn <- ggplot(data = n_articles_by_pubyear,
+                             aes(x = `Publication Year`, y = `n`)) +
+  geom_col(colour = "black", fill = "purple2") +
+  labs(x = "Publication Year", y = "Number of articles") +
+  scale_x_continuous(breaks = seq(2014, 2023, by = 1)) +
+  scale_y_continuous(breaks = seq(0, 1200, by = 200)) +
+  theme_bw() +
+  theme(axis.title = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(colour = "black", size = 10),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  annotate(geom = "text", label = "(b)", x = -Inf, y = Inf, hjust = -0.2, vjust = 1.2,
+           colour = "black", size = 8, fontface = 2)
+
+
+
+# Break down the article counts by badge combination
+n_articles_by_combo <- osb_lib_articles |> 
+  group_by(badge_combination) |> 
+  count() |> 
+  ungroup() |> 
+  mutate(badge_combination_label = case_when(
+    badge_combination == "D" ~ "Data only",
+    badge_combination == "DM" ~ "Data + Materials",
+    badge_combination == "DMP" ~ "Data + Materials + Preregistered",
+    badge_combination == "DP" ~ "Data + Preregistered",
+    badge_combination == "M" ~ "Materials only",
+    badge_combination == "MP" ~ "Materials + Preregistered",
+    badge_combination == "P" ~ "Preregistered only",
+    TRUE ~ NA_character_
+  )) |> 
+  arrange(desc(n), badge_combination_label) |> 
+  mutate(pct = n/sum(n)) |> 
+  mutate(cum_pct = cumsum(pct)) |> 
+  mutate(cum_pct_mid = cum_pct - 0.5*pct) |> 
+  arrange(desc(pct), badge_combination_label)
+
+# Create vectors for annotations
+anno_badge_combo_label <- n_articles_by_combo$badge_combination_label
+anno_badge_combo_label[4] <- "Data +\nMaterials +\nPreregistered"
+anno_badge_combo_label[5] <- "Data + Prereg."
+anno_badge_combo_label[6] <- "Prereg. only"
+anno_badge_combo_label[7] <- "\nMaterials + Prereg."
+anno_badge_combo_y <- n_articles_by_combo$cum_pct_mid
+
+# Create the badge combination figure
+fig_bycombo_artn <- ggplot(data = n_articles_by_combo,
+                           aes(x = "1",
+                               y = `n`,
+                               fill = fct_reorder(`badge_combination_label`,
+                                                  `n`))) +
+  geom_col(position = "fill", colour = "black", width = 0.333) + 
+  annotate("text",
+           x = "1",
+           y = anno_badge_combo_y[c(1, 2, 3)],
+           label = anno_badge_combo_label[c(1, 2, 3)],
+           vjust = 0.5, hjust = 0.5, size = 2.8) +
+  annotate("text",
+           x = "1",
+           y = anno_badge_combo_y[c(4)],
+           label = anno_badge_combo_label[c(4)],
+           vjust = 0.5, hjust = 0.5, size = 2.8) +
+  annotate("text",
+           x = "1",
+           y = anno_badge_combo_y[c(5, 6)],
+           label = anno_badge_combo_label[c(5, 6)],
+           vjust = 0.333, hjust = 0.5, size = 2.0, angle = 90) +
+  annotate("text",
+           x = "1",
+           y = anno_badge_combo_y[c(7)],
+           label = anno_badge_combo_label[c(7)],
+           vjust = 0.667, hjust = 0.5, size = 2.0, angle = 90) +
+  labs(y = "Percentage of articles with badges",
+       x = NULL) +
+  # ggtitle(label = paste0("Badge combination awarded (N = ",
+  #                        str_trim(sum(n_articles_by_combo$n)),
+  #                        ")")) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_discrete(labels = NULL) +
+  theme_bw() +
+  theme(axis.title = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(colour = "black", size = 10),
+        axis.text.y = element_text(colour = "black", size = 10),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = "bottom",
+        axis.ticks.y = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(colour = "black", size = 6)) +
+  coord_flip()
+
+```
+
+
+
+```{r `fig-nums-over-time`}
+#| echo: false
+#| fig-width: 7
+#| fig-height: 10
+
+# Combine the two numbers-over-time figures into a single plot
+# https://stackoverflow.com/questions/35808183/specify-plot-height-in-plot-grid-with-hv-aligment-cowplot
+# https://stackoverflow.com/a/27408589/1670053
+plots <- list(fig_bypubyear_cumj, fig_bypubyear_artn)
+grobs = lapply(plots, ggplotGrob)
+g = do.call(rbind, c(grobs, size="first"))
+g$widths = do.call(unit.pmax, lapply(grobs, "[[", "widths"))
+
+grid.newpage()
+grid.draw(g)
+
+```
+
+
+
+```{r `fig-badge-combos`}
+#| echo: false
+
+
+plot(fig_bycombo_artn)
+```
+
+```{r `calc-badge-combos2`}
+#| echo: false
+
+pct_DM <- n_articles_by_combo |> 
+  filter(badge_combination == "DM") |> 
+  summarise(pct_sum = sum(pct)) |> 
+  mutate(pct_final = round(100*pct_sum, 1)) |> 
+  pull(pct_final)
+
+pct_D <- n_articles_by_combo |> 
+  filter(badge_combination == "D") |> 
+  summarise(pct_sum = sum(pct)) |> 
+  mutate(pct_final = round(100*pct_sum, 1)) |> 
+  pull(pct_final)
+
+pct_allD <- n_articles_by_combo |> 
+  filter(badge_combination %in% c("D", "DP", "DMP", "DM")) |> 
+  summarise(pct_sum = sum(pct)) |> 
+  mutate(pct_final = round(100*pct_sum, 1)) |> 
+  pull(pct_final)
+
+pct_allM <- n_articles_by_combo |> 
+  filter(badge_combination %in% c("M", "MP", "DMP", "DM")) |> 
+  summarise(pct_sum = sum(pct)) |> 
+  mutate(pct_final = round(100*pct_sum, 1)) |> 
+  pull(pct_final)
+
+pct_allP <- n_articles_by_combo |> 
+  filter(badge_combination %in% c("P", "DP", "DMP", "MP")) |> 
+  summarise(pct_sum = sum(pct)) |> 
+  mutate(pct_final = round(100*pct_sum, 1)) |> 
+  pull(pct_final)
+  
+```
+
+Figure X shows the relative proportions of articles with each possible combination of badges in the database. All seven possible combinations of open science badges were observed (when collapsing the Preregistered and Preregistered Plus badges into a single category, and ignoring notations to badges), although some combinations were much more common than others. The most common combination was an Open Data badge and an Open Material badge (`r pct_DM`%), followed by an Open Data badge only (`r pct_D`%). Considering all variations, overall `r pct_allD`% of articles in the database had at least an Open Data badge, `r pct_allM`% had at least an Open Materials badge, and `r pct_allP`% had at least a Preregistered/Preregistered Plus badge.
+
+```{r `calc-by-journal`}
+#| echo: false
+
+n_articles_by_jnl <- osb_lib_articles |> 
+  group_by(`Publication Title`) |> 
+  count() |> 
+  ungroup() |> 
+  arrange(desc(n), `Publication Title`)
+  
+```
+
+
+
+```{r `fig-n-by-journal`}
+#| echo: false
+#| fig-height: 10
+
+fig_byjnl_artn <- ggplot(data = n_articles_by_jnl,
+                             aes(x = reorder(`Publication Title`, `n`),
+                                 y = `n`)) +
+  geom_col(colour = "black", fill = "green4") +
+  labs(y = "Number of articles") +
+  scale_y_continuous(breaks = seq(0, 1000, by = 100)) +
+  theme_bw() +
+  theme(axis.title = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(colour = "black", size = 8),
+        axis.text.y = element_text(colour = "black", size = 8),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.title.y = element_blank()) +
+  coord_flip()
+
+plot(fig_byjnl_artn)
+```
+
+
+
+```{r `output-plot-images`}
+#| echo: false
+
+ggsave(filename = "osb_lib_summary_fig_byyear.png",
+       plot = g,
+       device = "png",
+       path = here("results"),
+       width = 15,
+       height = 20,
+       units = "cm")
+
+ggsave(filename = "osb_lib_summary_fig_combos.png",
+       plot = fig_bycombo_artn,
+       device = "png",
+       path = here("results"),
+       width = 15,
+       height = 10,
+       units = "cm")
+
+ggsave(filename = "osb_lib_summary_fig_byjnl.png",
+       plot = fig_byjnl_artn,
+       device = "png",
+       path = here("results"),
+       width = 15,
+       height = 25,
+       units = "cm")
+
+```
+
+
+
+```{r `output-tbl-data`}
+#| echo: false
+
+write_excel_csv(wos_cats_fmt,
+                here("results", "osb_lib_summary_tbl_wos_subj_cats.csv"),
+                na = "",
+                quote = "all",
+                eol = "\r\n")
+
+```
